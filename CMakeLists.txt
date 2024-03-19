@@ -14,4 +14,5 @@ endif()
 add_executable(BrickTrainServer
   IniFile.cpp
   Main.cpp
+  Socket.cpp
 )
