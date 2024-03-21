@@ -47,7 +47,7 @@ public:
 
     Socket &operator=(Socket &&other);
 
-    bool connect(const char *addr, uint16_t port);
+    bool connect(const char *addr, uint16_t port, uint16_t sourcePort = 0);
     bool bind(const char *addr, uint16_t port);
     bool listen(const char *addr, uint16_t port);
 

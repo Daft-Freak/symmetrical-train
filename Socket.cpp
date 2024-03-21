@@ -133,7 +133,7 @@ Socket &Socket::operator=(Socket &&other)
     return *this;
 }
 
-bool Socket::connect(const char *addr, uint16_t port)
+bool Socket::connect(const char *addr, uint16_t port, uint16_t sourcePort)
 {
     if(fd != -1)
         return false;
@@ -155,6 +155,22 @@ bool Socket::connect(const char *addr, uint16_t port)
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if(fd == -1)
             continue;
+
+        if(sourcePort != 0)
+        {
+            // bind if we want a specific source port
+            struct sockaddr_in6 sinAddr = {};
+            sinAddr.sin6_family = AF_INET6;
+            sinAddr.sin6_port = htons(sourcePort);
+            sinAddr.sin6_addr = in6addr_any;
+
+            if(::bind(fd, (struct sockaddr *)&sinAddr, sizeof(sinAddr)) == -1)
+            {
+                close();
+                fd = -1;
+                continue;
+            }
+        }
 
         if(::connect(fd, p->ai_addr, p->ai_addrlen) == -1)
         {
