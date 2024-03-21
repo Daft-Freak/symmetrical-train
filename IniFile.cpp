@@ -1,4 +1,5 @@
-#include <iostream> //
+#include <charconv>
+#include <iostream>
 #include <fstream>
 
 #include "IniFile.hpp"
@@ -36,6 +37,25 @@ std::optional<std::string_view> IniFile::getValue(std::string_view sectionName, 
     }
 
     return {};
+}
+
+std::optional<int> IniFile::getIntValue(std::string_view sectionName, std::string_view key) const
+{
+    auto strValue = getValue(sectionName, key);
+    if(!strValue)
+        return {};
+
+    int value;
+
+    auto start = strValue.value().data();
+    auto end = start + strValue.value().length();
+
+    auto res = std::from_chars(start, end, value);
+
+    if(res.ec != std::errc{} || res.ptr != end)
+        return {};
+    
+    return value;
 }
 
 void IniFile::load(std::istream &stream)

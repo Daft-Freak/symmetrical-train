@@ -16,6 +16,7 @@ public:
     const Section *getSection(std::string_view name) const;
 
     std::optional<std::string_view> getValue(std::string_view sectionName, std::string_view key) const;
+    std::optional<int> getIntValue(std::string_view sectionName, std::string_view key) const;
 
 private:
     void load(std::istream &stream);
