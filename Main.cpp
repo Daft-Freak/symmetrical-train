@@ -807,7 +807,7 @@ int main(int argc, char *argv[])
     }
 
     // copying values returned by game in a regular multiplayer session...
-    uint32_t sessionFlags = DPSession_MigrateHost | DPSession_PingTimer | DPSession_ReliableProtocol | DPSession_OptimiseLatency;
+    uint32_t sessionFlags = /*DPSession_PingTimer |*/ DPSession_ReliableProtocol | DPSession_OptimiseLatency;
     Session session(std::string(*sessionName), appGUID, sessionFlags);
 
     // create local system player
