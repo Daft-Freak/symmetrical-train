@@ -1,5 +1,6 @@
 #include <cassert>
 #include <charconv>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -160,6 +161,8 @@ public:
     {
         memset(guid, 1, 16); // TODO: generate valid guid
         memcpy(this->appGUID, appGUID, 16);
+
+        startTime = std::chrono::steady_clock::now();
     }
 
     const uint8_t *getGUID() const
@@ -207,6 +210,11 @@ public:
     uint32_t adjustId(uint32_t id) const
     {
         return id ^ idXor;
+    }
+
+    uint32_t getTickCount() const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
     }
 
     Player &createNewSystemPlayer(uint32_t flags = 0)
@@ -281,6 +289,8 @@ private:
     uint32_t maxPlayers = 10; // TODO
     uint32_t idXor = 0; // TODO: init
     uint32_t idUnique = 1; // TODO: incremented at some point
+
+    std::chrono::steady_clock::time_point startTime;
 
     std::map<uint32_t, Player> players;
 };
