@@ -298,7 +298,7 @@ private:
 class Client final
 {
 public:
-    Client(Session &session, std::string address, int outgoingPort) : session(session), address(std::move(address)), outgoingPort(outgoingPort), tcpIncoming(SocketType::TCP), tcpOutgoing(SocketType::TCP)
+    Client(Session &session, std::string address, int outgoingPort) : session(session), address(std::move(address)), outgoingPort(outgoingPort), tcpIncoming(SocketType::TCP), tcpOutgoing(SocketType::TCP), udpSocket(SocketType::UDP)
     {
     }
 
@@ -375,6 +375,11 @@ public:
     void setTCPIncomingSocket(Socket &&socket)
     {
         tcpIncoming = std::move(socket);
+    }
+
+    Socket &getUDPSocket()
+    {
+        return udpSocket;
     }
 
 private:
@@ -502,9 +507,13 @@ private:
                     ptr += playerInfo->serviceProviderDataSize;
                 }
 
-                // TODO: player data
-
                 // no reply
+
+                // is this the right place to open the socket?
+                // it's the last thing sent before switching to UDP...
+                // (and we're connecting the socket, it's only used to send to this client)
+                if(!udpSocket.connect(address.c_str(), outgoingPort, outgoingPort))
+                    std::cerr << "failed to connect UDP socket\n";
 
                 return true;
             }
@@ -729,6 +738,8 @@ private:
 
     int outgoingPort;
     Socket tcpIncoming, tcpOutgoing;
+
+    Socket udpSocket;
 
     uint32_t systemPlayerId = ~0u;
 };
