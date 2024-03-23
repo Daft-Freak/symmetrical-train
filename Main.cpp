@@ -13,6 +13,26 @@
 #include "IniFile.hpp"
 #include "Socket.hpp"
 
+// loco game messages
+
+struct LocoMessageHeader
+{
+    uint32_t dstPlayerId; // with the xor
+    uint32_t srcPlayerId;
+    uint16_t command; // something like that
+    uint16_t magic; // has to be 300
+};
+static_assert(sizeof(LocoMessageHeader) == 12);
+
+struct LocoCmd1002
+{
+    LocoMessageHeader header;
+
+    uint32_t userValue; // written to the .usr file and sent back in later messages
+    uint8_t unk; // does... something?
+};
+
+
 static std::u16string convertUTF8ToUCS2(std::string_view u8)
 {
     std::u16string ret;
@@ -266,6 +286,18 @@ public:
     const std::map<uint32_t, Player> &getPlayers() const
     {
         return players;
+    }
+
+    Player *getLocalSystemPlayer()
+    {
+        for(auto &player : players)
+        {
+            auto playerFlags = player.second.getFlags();
+            if((playerFlags & DPPlayer_System) && (playerFlags & DPPlayer_SendingMachine))
+                return &player.second;
+        }
+
+        return nullptr;
     }
 
 private:
@@ -664,6 +696,8 @@ private:
                 if(!udpSocket.connect(address.c_str(), outgoingPort, outgoingPort))
                     std::cerr << "failed to connect UDP socket\n";
 
+                sendInitialLocoMessage();
+
                 return true;
             }
 
@@ -842,6 +876,47 @@ private:
             return;
         }
 
+        if(len >= 12)
+        {
+            // check for loco-specific message
+            auto locoHeader = reinterpret_cast<const LocoMessageHeader *>(data);
+            if(locoHeader->magic == 300)
+            {
+                std::cout << "loco msg " << locoHeader->command << " from " << session.adjustId(locoHeader->srcPlayerId) << " to "
+                          << session.adjustId(locoHeader->dstPlayerId) << " len " << (len - 12) << std::endl;
+
+                if(locoHeader->command == 1004) // postcards?
+                {
+                    // this message has the value from the initial 1002 message
+                    // followed by the number of postcards (twice?)
+                    // then some postcard data, which seems to be in a slightly different format than the .crd files
+                    // (and also might have some junk at the start...)
+
+                    // echo
+                    auto srcId = session.getLocalSystemPlayer()->getId();
+                    auto dstId = systemPlayerId;
+                    uint8_t msgFlags = DPRPFrame_Command | DPRPFrame_Start | DPRPFrame_End;
+                    size_t messageSize = getRPHeaderSize(srcId & 0xFFFF, dstId & 0xFFFF) + len;
+
+                    auto messageBuffer = new uint8_t[messageSize];
+                    auto echoData = fillRPHeader(messageBuffer, srcId & 0xFFFF, dstId & 0xFFFF, msgFlags, 2, 1, 0); // TODO: message ids
+                    auto echoHeader = reinterpret_cast<LocoMessageHeader *>(echoData);
+
+                    memcpy(echoData, data, len);
+
+                    echoHeader->dstPlayerId = session.adjustId(dstId);
+                    echoHeader->srcPlayerId = 0;//session.adjustId(srcId);
+
+                    // FIXME: this packet is huge, should split it
+                    if(!udpSocket.send(messageBuffer, messageSize))
+                    {
+                        std::cerr << "failed to send 1004 echo\n";
+                    }
+                }
+                return;
+            }
+        }
+
         std::cout << "rp msg len " << len << std::endl;
         std::cout << "\t";
 
@@ -857,6 +932,38 @@ private:
         }
 
         std::cout << std::endl;
+    }
+
+    void sendInitialLocoMessage()
+    {
+        // this gets the game to send things
+        // another interesting command is 1000, which I think sends back the game version
+        // regular multiplayer session use at least 1008-1014, 1017-1018
+        auto srcId = session.getLocalSystemPlayer()->getId();
+        auto dstId = systemPlayerId;
+        uint8_t msgFlags = DPRPFrame_Command | DPRPFrame_Start | DPRPFrame_End;
+        size_t messageSize = getRPHeaderSize(srcId & 0xFFFF, dstId & 0xFFFF) + sizeof(LocoCmd1002);
+
+        auto messageBuffer = new uint8_t[messageSize];
+        auto data = fillRPHeader(messageBuffer, srcId & 0xFFFF, dstId & 0xFFFF, msgFlags, 1, 1, 0); // TODO: message ids
+        auto message = reinterpret_cast<LocoCmd1002 *>(data);
+
+        // seems a bit redundant
+        message->header.dstPlayerId = session.adjustId(dstId);
+        message->header.srcPlayerId = 0;
+
+        message->header.command = 1002;
+        message->header.magic = 300;
+
+        message->userValue = 0xFFFFFFFF;
+        message->unk = 0;
+
+        if(!udpSocket.send(messageBuffer, messageSize))
+        {
+            std::cerr << "Failed to send cmd1002!\n";
+        }
+
+        delete[] messageBuffer;
     }
 
     bool checkOutgoingSocket()
