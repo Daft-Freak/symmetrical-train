@@ -309,3 +309,18 @@ struct DPSPMessageSuperEnumPlayersReply
     // superpackedplayer
 };
 static_assert(sizeof(DPSPMessageSuperEnumPlayersReply) == 28);
+
+
+// "reliable protocol" bits
+
+enum DPRPFrameFlags
+{
+    DPRPFrame_Reliable = 1 << 0, // because being the RELIABLE protocol isn't enough?
+    DPRPFrame_Ack      = 1 << 1,
+    DPRPFrame_SendAck  = 1 << 2,
+    DPRPFrame_End      = 1 << 3,
+    DPRPFrame_Start    = 1 << 4,
+    DPRPFrame_Command  = 1 << 5,
+    DPRPFrame_Big      = 1 << 6, // unimplemented
+    DPRPFrame_Extended = 1 << 7, // also unimplemented?
+};

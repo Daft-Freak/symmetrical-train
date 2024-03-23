@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <sys/select.h>
@@ -367,6 +368,154 @@ public:
         return handleDPlayCommand(header->command, data + sizeof(DPSPMessageHeader), len - sizeof(DPSPMessageHeader));
     }
 
+    void handleUDPRead()
+    {
+        // this is for data received after joining a session
+        uint8_t buf[2048];
+        int len = udpSocket.recv(buf, sizeof(buf));
+        
+        // zero for disconnected is a tcp thing...?
+        if(len <= 0)
+            return;
+
+        // assume we're using the "reliable protocol"
+
+        if(len < 6)
+        {
+            std::cerr << "short frame? " << len << "\n";
+            return;
+        }
+
+        auto ptr = buf;
+        auto end = ptr + len;
+
+        // variable length ids
+        uint16_t fromId, toId;
+
+        fromId = *ptr++;
+
+        if(fromId & 0x80)
+            fromId = (fromId & 0x7F) | (*ptr++) << 7;
+
+        if(fromId & 0x4000)
+            fromId = (fromId & 0x3FF) | (*ptr++) << 14;
+
+        toId = *ptr++;
+
+        if(toId & 0x80)
+            toId = (toId & 0x7F) | (*ptr++) << 7;
+
+        if(toId & 0x4000)
+            toId = (toId & 0x3FF) | (*ptr++) << 14;
+
+        size_t idLen = ptr - buf; // not counted in total data
+
+        // make sure we have enough for the rest of the header
+        if(end - ptr < 4)
+        {
+            std::cerr << "short frame? " << len << "\n";
+            return;
+        }
+
+        uint8_t flags = *ptr++;
+        uint8_t messageId = *ptr++;
+        uint8_t sequence = *ptr++;
+        uint8_t serial = *ptr++;
+
+        if(flags & DPRPFrame_Extended)
+        {
+            std::cerr << "ext flags\n";
+            return;
+        }
+
+        size_t dataLen = end - ptr;
+
+        dataReceived += len - idLen;
+
+        // validate player indices
+        if(toId != 0)
+        {
+            std::cerr << "frame to " << toId << "\n";
+            return;
+        }
+
+        // check message id
+        // if no ongoing/completed recv, first recv = message id
+        // if message id outside first ongoing/completed recv -> +23, discard
+        // if not receiving this id, add to list
+        // if already received, send ack (prev one got lost)
+
+        // send nack if unexpected sequence
+        // ... or don't as sequence numbers are always 1 and nacks are unimplemented?
+
+        if(flags & DPRPFrame_Ack)
+        {
+            std::cout << "rp ack" << std::endl;
+        }
+        else if((flags & DPRPFrame_Start) && (flags & DPRPFrame_End))
+        {
+            // single frame message, avoid all the copying
+            handleCompletedRPMessage(ptr, dataLen);
+        }
+        else
+        {
+            // basic message assembly
+            if(flags & DPRPFrame_Start)
+            {
+                if(currentMessageId != -1)
+                    std::cerr << "rp multi msg\n";
+
+                currentMessageId = messageId;
+                nextMessageSequence = sequence + 1;
+
+                // copy initial data
+                messageBuffer.resize(dataLen);
+                memcpy(messageBuffer.data(), ptr, dataLen);
+            }
+            else if(sequence == nextMessageSequence)
+            {
+                // append
+                auto offset = messageBuffer.size();
+                messageBuffer.resize(offset + dataLen);
+                memcpy(messageBuffer.data() + offset, ptr, dataLen);
+
+                nextMessageSequence++;
+            }
+            else
+            {
+                std::cerr << "rp seq err\n";
+                return;
+            }
+            
+            if(flags & DPRPFrame_End)
+            {
+                handleCompletedRPMessage(messageBuffer.data(), messageBuffer.size());
+                currentMessageId = -1;
+            }
+        }
+
+        // send ack if requested or end of message
+        if(flags & (DPRPFrame_End | DPRPFrame_SendAck))
+        {
+            // send ack
+            uint8_t replyFlags = DPRPFrame_Ack | (flags & DPRPFrame_Reliable); // reliably ack a reliable packet
+            auto replySize = getRPHeaderSize(toId, fromId) + 8;
+            auto replyBuf = new uint8_t[replySize];
+
+            auto ptr = fillRPHeader(replyBuf, toId, fromId, replyFlags, messageId, sequence, serial);
+
+            *reinterpret_cast<uint32_t *>(ptr) = dataReceived;
+            *reinterpret_cast<uint32_t *>(ptr + 4) = session.getTickCount();
+
+            if(!udpSocket.send(replyBuf, replySize))
+            {
+                std::cerr << "Failed to send ack!\n";
+            }
+
+            delete[] replyBuf;
+        }
+    }
+
     Socket &getTCPIncomingSocket()
     {
         return tcpIncoming;
@@ -680,6 +829,36 @@ private:
         return false;
     }
 
+    void handleCompletedRPMessage(const uint8_t *data, size_t len)
+    {
+        if(memcmp(data, "play", 4) == 0)
+        {
+            // the data is a dplay message
+            auto headerSize = sizeof(DPSPMessageHeader) - offsetof(DPSPMessageHeader, signature);
+            DPSPMessageHeader packetHeader;
+            memcpy(&packetHeader.signature, data, headerSize);
+            
+            handleDPlayCommand(packetHeader.command, data + headerSize, len - headerSize);
+            return;
+        }
+
+        std::cout << "rp msg len " << len << std::endl;
+        std::cout << "\t";
+
+        for(size_t i = 0; i < len; i++)
+        {
+            auto b = data[i];
+            auto hi = b >> 4;
+            auto lo = b & 0xF;
+
+            std::cout << static_cast<char>(hi > 9 ? 'A' + hi - 10 : '0' + hi)
+                      << static_cast<char>(lo > 9 ? 'A' + lo - 10 : '0' + lo)
+                      << " ";
+        }
+
+        std::cout << std::endl;
+    }
+
     bool checkOutgoingSocket()
     {
         // TODO: add an isConnected? (or some more accurate name for an fd existing)
@@ -732,6 +911,73 @@ private:
         desc->applicationDefined4 = 0;
     }
 
+    // reliable protocol
+    size_t getRPHeaderSize(uint16_t from, uint16_t to)
+    {
+        size_t ret = 4;
+
+        if(to < 128)
+            ret += 1;
+        else if(to < 16384)
+            ret += 2;
+        else
+            ret += 3;
+
+        if(from < 128)
+            ret += 1;
+        else if(from < 16384)
+            ret += 2;
+        else
+            ret += 3;
+
+        return ret;
+    }
+
+    uint8_t *fillRPHeader(uint8_t *data, uint16_t from, uint16_t to, uint8_t flags, uint8_t messageId, uint8_t sequence, uint8_t serial)
+    {
+        // from
+        if(from < 128)
+            *data++ = from & 0x7F;
+        else if(from < 14384)
+        {
+            *data++ = (from & 0x7F) | 0x80;
+            *data++ = from >> 7;
+        }
+        else
+        {
+            *data++ = (from & 0x7F) | 0x80;
+            *data++ = ((from >> 7) & 0x7F) | 0x80;
+            *data++ = from >> 14;
+        }
+
+        // to
+        if(to < 128)
+            *data++ = to & 0x7F;
+        else if(to < 14384)
+        {
+            *data++ = (to & 0x7F) | 0x80;
+            *data++ = to >> 7;
+        }
+        else
+        {
+            *data++ = (to & 0x7F) | 0x80;
+            *data++ = ((to >> 7) & 0x7F) | 0x80;
+            *data++ = to >> 14;
+        }
+
+        // flags
+        *data++ = flags;
+
+        // nack has ext flags here (but ext flags aren't implemented)
+        // ... and neither are nacks
+
+        *data++ = messageId;
+        *data++ = sequence;
+        *data++ = serial; // not for nack
+
+        return data;
+    }
+
     Session &session;
 
     std::string address;
@@ -742,6 +988,14 @@ private:
     Socket udpSocket;
 
     uint32_t systemPlayerId = ~0u;
+
+    // "reliable protocol" related
+    uint32_t dataReceived = 0;
+
+    // TODO: docs suggest that multiple messages can be in flight at once
+    int currentMessageId = -1;
+    uint8_t nextMessageSequence = 0;
+    std::vector<uint8_t> messageBuffer;
 };
 
 int main(int argc, char *argv[])
@@ -856,6 +1110,10 @@ int main(int argc, char *argv[])
             int fd = client.second.getTCPIncomingSocket().getFd();
             if(fd != -1)
                 addFd(fd);
+
+            fd = client.second.getUDPSocket().getFd();
+            if(fd != -1)
+                addFd(fd);
         }
 
         int ready = select(maxFd + 1, &fds, nullptr, nullptr, nullptr);
@@ -914,7 +1172,8 @@ int main(int argc, char *argv[])
         for(auto it = clients.begin(); it != clients.end();)
         {
             auto &client = *it;
-            if(FD_ISSET(client.second.getTCPIncomingSocket().getFd(), &fds))
+            int fd = client.second.getTCPIncomingSocket().getFd();
+            if(fd != -1 && FD_ISSET(fd, &fds))
             {
                 // TODO: move most of this to client
                 auto &socket = client.second.getTCPIncomingSocket();
@@ -943,6 +1202,10 @@ int main(int argc, char *argv[])
                         std::cerr << "tcp need buf " << parsedLen << "/" << len << "\n";
                 }
             }
+
+            fd = client.second.getUDPSocket().getFd();
+            if(fd != -1 && FD_ISSET(fd, &fds))
+               client.second.handleUDPRead();
 
             ++it;
         }
